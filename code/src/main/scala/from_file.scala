@@ -24,3 +24,4 @@ object Demo extends IOApp.Simple:
 
     flow.compile.drain
 end Demo
+
