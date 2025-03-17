@@ -262,7 +262,7 @@ layout: true
 A pipeline:
 - For every vacation report
 - Enrich the data
-- Write to database
+- Write to a database
 
 ---
 
@@ -452,7 +452,15 @@ in
 
 ```scala
 in
-  .metered(50.millis)
+  .through(throttle(20, 1.second, Enforcing))
+  .evalMap(api.enrich)
+```
+
+---
+
+```scala
+in
+  .through(throttle(20, 1.second, Enforcing))
   .parEvalMap(10)(api.enrich)
 ```
 
@@ -593,6 +601,102 @@ object Demo extends IOApp.Simple:
 {{content}}
 --
   def run: IO[Unit] = action
+
+---
+layout:true
+
+## Bonus: gRPC
+---
+
+```protobuf
+service VacationReportService {
+  rpc submitReports (stream VacationReport)
+    returns (Done);
+}
+{{content}}
+```
+--
+
+message VacationReport {
+  string name = 1;
+  int32 days = 2;
+  bool sickLeave = 3;
+}
+
+message Done {}
+---
+
+```scala
+val fromGrpc: Stream[IO, VacationReport] =
+{{content}}
+```
+--
+  val requests: Stream[IO, GrpcRequest[proto.VR]] =
+    EndpointServer.run(port = 5555)(
+      VacationReportService.make)
+{{content}}
+--
+
+  val reports: Stream[IO, Stream[IO, VacationReport]] =
+    requests.map: request =>
+      request.stream
+        .map(fromProto)
+        .unNone
+        .handleErrorWith(_ => Stream.empty)
+
+  reports.parJoin(100)
+
+---
+
+```scala
+object ServerDemo extends IOApp.Simple:
+  val flow =
+    resources.flatMap: (api, db) =>
+      fromGrpc
+        .through(enrichPipeline(api))
+        .through(dbPipeline(db))
+
+  val action: IO[Unit] = flow.compile.drain
+
+  def run: IO[Unit] = action
+```
+---
+
+```scala
+object ClientDemo extends IOApp.Simple:
+  val vacationReportService =
+    NettyChannelBuilder
+      .forAddress("localhost", 5555)
+      .usePlaintext
+      .resource[IO]
+      .flatMap(ReportServiceFs2Grpc
+        .stubResource[IO])
+{{content}}
+```
+--
+
+  val run = vacationReportService.use: service =>
+    service
+    .submitReports(fromFile.map(toProto), Metadata())
+    .void
+---
+
+
+```scala
+object ClientDemo extends IOApp.Simple:
+  val vacationReportService =
+    NettyChannelBuilder
+      .forAddress("localhost", 5555)
+      .usePlaintext
+      .resource[IO]
+      .flatMap(ReportServiceFs2Grpc
+        .stubResource[IO])
+
+  val run = vacationReportService.use: service =>
+    service
+    .submitReports(fromConsonle.map(toProto), Metadata())
+    .void
+```
 
 ---
 layout: false
